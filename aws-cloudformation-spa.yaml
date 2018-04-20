@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  DomainFQDN:
+    Description: "FQDN of root domain name. Must be FQDN such as \"example.com.\""
+    Type: String
+  DomainRoot:
+    Description: "Root domain name for the Route53 records. Must not be FQDN such as \"example.com\""
+    Type: String
+  SiteDomain:
+    Description: "Domain name for your website (www.example.com)"
+    Type: String
+  OriginPath:
+    Description: "Initial Cloudfront Origin Path"
+    Type: String
+  PriceClass:
+    Description: "Price class (https://aws.amazon.com/cloudfront/pricing/)"
+    Default: PriceClass_100
+    AllowedValues:
+      - PriceClass_100
+      - PriceClass_200
+      - PriceClass_All
+    Type: String
+  CacheMinimum:
+    Description: "Minimum cache lifetime in seconds for the CloudFront distribution"
+    Default: 90
+    Type: Number
+  CacheDefault:
+    Description: "Default cache lifetime in seconds for the CloudFront distribution (default 30 minutes)"
+    Default: 1800
+    Type: Number
+  CacheMaximum:
+    Description: "Maximum cache lifetime in seconds for the CloudFront distribution (default 3 months)"
+    Default: 7776000
+    Type: Number
+  ViewerProtocol:
+    Description: "Minimum cache lifetime in seconds for the CloudFront distribution"
+    Default: redirect-to-https
+    AllowedValues:
+      - redirect-to-https
+      - https-only
+      - allow-all
+    Type: String
+  SSLSupportMethod:
+    Description: >
+      SSL support options. sni-only requires all clients support SNI (so no
+      IE5, etc) or vip (Virtual IP address). VIP support requires costs way
+      more per month, and SNI is supported by a vast majority of devices.
+    Default: sni-only
+    AllowedValues:
+      - sni-only
+      - vip
+    Type: String
+Resources:
+  SpaBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref "AWS::StackName"
+      AccessControl: Private
+      WebsiteConfiguration:
+        ErrorDocument: index.html
+        IndexDocument: index.html
+  SpaBucketLogs:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: Private
+      BucketName: !Join [ "-", [ !Ref "AWS::StackName", "logs" ] ]
+  SSLCert:
+    Type: "AWS::CertificateManager::Certificate"
+    Properties:
+      DomainName: !Ref SiteDomain
+      DomainValidationOptions:
+        - DomainName: !Ref SiteDomain
+          ValidationDomain: !Ref DomainRoot
+  CDN:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        IPV6Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Comment: !Ref SiteDomain
+        Logging:
+          Bucket: !GetAtt SpaBucketLogs.DomainName
+          IncludeCookies: true
+        PriceClass: !Ref PriceClass
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 0
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SSLCert
+          SslSupportMethod: !Ref SSLSupportMethod
+        Aliases:
+          - !Ref SiteDomain
+        Origins:
+          - Id:
+              !Join
+                - .
+                -
+                  - !Ref SpaBucket
+                  - s3.amazonaws.com
+            OriginPath: !Ref OriginPath
+            DomainName:
+              !Join
+                - .
+                -
+                  - !Ref SpaBucket
+                  - s3.amazonaws.com
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+        DefaultCacheBehavior:
+          Compress: true
+          ForwardedValues:
+            QueryString: true
+          TargetOriginId:
+            !Join
+              - .
+              -
+                - !Ref SpaBucket
+                - s3.amazonaws.com
+          ViewerProtocolPolicy: !Ref ViewerProtocol
+          MinTTL: !Ref CacheMinimum
+          DefaultTTL: !Ref CacheDefault
+          MaxTTL: !Ref CacheMaximum
+  SiteDomainRecords:
+    Type: "AWS::Route53::RecordSetGroup"
+    Properties:
+      HostedZoneName: !Ref DomainFQDN
+      Comment: !Sub "DNS records associated with ${SiteDomain} SPA"
+      RecordSets:
+        - Name: !Ref SiteDomain
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt CDN.DomainName
+            # http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget.html
+            HostedZoneId: Z2FDTNDATAQYW2
+        - Name: !Ref SiteDomain
+          Type: AAAA
+          AliasTarget:
+            DNSName: !GetAtt CDN.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2
+Outputs:
+  CloudfrontDistributionId:
+      Value: !Ref CDN
